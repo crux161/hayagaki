@@ -7,7 +7,7 @@ Package.resolved
 *.xcodeproj/
 .DS_Store
 
-# C++ Compilation Artifacts (Safety net)
+# C++ Compilation Artifacts
 *.o
 *.so
 *.dylib
