@@ -1,0 +1,3 @@
+[submodule "Sources/libsumi"]
+	path = Sources/libsumi
+	url = https://github.com/crux161/libsumi

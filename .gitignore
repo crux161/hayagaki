@@ -1,0 +1,14 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode / MacOS
+*.xcodeproj/
+.DS_Store
+
+# C++ Compilation Artifacts (Safety net)
+*.o
+*.so
+*.dylib
+*.a
