@@ -1,53 +1,67 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// 1. Vertex Input (Matches SwiftVertex)
-struct SumiVertex {
-    packed_float3 position;
-    packed_float3 color;
+// 1. Vertex Input (Mapped via Descriptor)
+struct VertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float2 uv       [[attribute(2)]];
 };
 
-// 2. Uniforms (Data that changes per frame)
 struct Uniforms {
     float4x4 modelMatrix;
     float4x4 viewMatrix;
     float4x4 projectionMatrix;
 };
 
-struct RasterizerData {
-    float4 position [[position]];
-    float4 color;
+struct SceneDescriptor {
+    constant Uniforms* uniforms [[id(0)]];
+    texture2d<float>   baseMap  [[id(1)]];
 };
 
-// 3. Vertex Shader
-vertex RasterizerData sumi_vertex_shader(uint vertexID [[vertex_id]],
-                                         constant SumiVertex *vertices [[buffer(0)]],
-                                         constant Uniforms &uniforms [[buffer(1)]]) 
+struct RasterizerData {
+    float4 position [[position]];
+    float3 normal;
+    float2 uv;
+};
+
+// 2. Vertex Shader (Using stage_in)
+vertex RasterizerData sumi_vertex_shader(VertexIn in [[stage_in]],
+                                         constant SceneDescriptor &scene [[buffer(0)]]) 
 {
     RasterizerData out;
-	
-    float4 pos = float4(vertices[vertexID].position, 1.0);
-
-    // Unpack the 12-byte position to a 16-byte float4
-    float3 p = vertices[vertexID].position;
-    float4 position = float4(p, 1.0);
     
-    // Apply the rotation matrix calculated by libsumi
-    out.position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * pos;
+    // Position Transform
+    float4 pos = float4(in.position, 1.0);
+    float4x4 mvp = scene.uniforms->projectionMatrix * scene.uniforms->viewMatrix * scene.uniforms->modelMatrix;
+    out.position = mvp * pos;
     
-    out.color = float4(vertices[vertexID].color, 1.0);
+    // Normal Transform (Simple rotation)
+    // We cast the 4x4 to 3x3 to extract just rotation/scale
+    float3x3 rotMat = float3x3(scene.uniforms->modelMatrix[0].xyz, 
+                               scene.uniforms->modelMatrix[1].xyz, 
+                               scene.uniforms->modelMatrix[2].xyz);
+    out.normal = rotMat * in.normal;
+    
+    out.uv = in.uv;
     return out;
 }
 
-fragment float4 sumi_fragment_shader(RasterizerData in [[stage_in]]) {
-    return in.color;
-}
-
-// Keep the compute test for debugging if you like
-kernel void sumi_compute_test(device SumiVertex* vertices [[buffer(0)]],
-                              uint id [[thread_position_in_grid]]) {
-    float3 pos = vertices[id].position;
-    float3 col = vertices[id].color;
-    pos += col * 0.001;
-    vertices[id].position = pos;
+// 3. Fragment Shader
+fragment float4 sumi_fragment_shader(RasterizerData in [[stage_in]],
+                                     constant SceneDescriptor &scene [[buffer(0)]]) 
+{
+    constexpr sampler s(filter::linear, mip_filter::linear);
+    
+    // Check if texture exists/is valid (optional safety, Metal handles nil gracefully usually)
+    float4 texColor = scene.baseMap.sample(s, in.uv);
+    
+    // Basic Lighting (Lambertian)
+    float3 lightDir = normalize(float3(1.0, 1.0, 1.0)); // Light from top-right-front
+    float nDotL = max(dot(normalize(in.normal), lightDir), 0.1); // 0.1 ambient
+    
+    // Debug: If texture is black, output pink to prove shader works
+    // if (texColor.a == 0) return float4(1, 0, 1, 1);
+    
+    return float4(texColor.rgb * nDotL, 1.0);
 }

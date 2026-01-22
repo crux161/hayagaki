@@ -3,6 +3,13 @@
 .swiftpm/
 Package.resolved
 
+# tools and scripting
+env.sh
+
+# development artifacts
+*.mp4
+*.mov
+
 # Xcode / MacOS
 *.xcodeproj/
 .DS_Store
