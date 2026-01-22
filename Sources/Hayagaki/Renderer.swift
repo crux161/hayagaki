@@ -4,24 +4,13 @@ import ModelIO
 import libsumi
 import CryptoKit
 
-// Helper to silence ModelIO internal noise
+// Helper to silence ModelIO noise
 func silenceStderr(_ block: () -> Void) {
-    // Save the original stderr
     let originalStderr = dup(STDERR_FILENO)
-    
-    // Open /dev/null
     let null = open("/dev/null", O_WRONLY)
-    
-    // Redirect stderr to /dev/null
     dup2(null, STDERR_FILENO)
-    
-    // Run the noisy block
     block()
-    
-    // Restore stderr
     dup2(originalStderr, STDERR_FILENO)
-    
-    // Cleanup
     close(null)
     close(originalStderr)
 }
@@ -48,10 +37,14 @@ class Renderer: NSObject, MTKViewDelegate {
     var recorder: Recorder?
     let renderSize = CGSize(width: 1920, height: 1080)
     
-    var rotationAngle: Float = 0.0
-    var frameCounter: Int = 0 
+    // --- INTERACTION STATE ---
+    var rotationX: Float = 0.0
+    var rotationY: Float = 0.0
+    var zoomLevel: Float = 1.0 
+    var meshScale: Float = 1.0
+    var isDragging = false
     
-    // SHA256 of the known good bunny.obj (Update this if you change mirrors!)
+    var frameCounter: Int = 0
     let EXPECTED_BUNNY_SHA256 = "" 
     
     init?(metalKitView: MTKView) {
@@ -72,36 +65,26 @@ class Renderer: NSObject, MTKViewDelegate {
         let meshURL = docs.appendingPathComponent("bunny.obj")
         
         var shouldDownload = true
-        
         if fileManager.fileExists(atPath: meshURL.path) {
-            print("📂 Found cached asset: \(meshURL.lastPathComponent)")
+            print("📂 Found cached asset.")
             if let data = try? Data(contentsOf: meshURL) {
                 let hashed = SHA256.hash(data: data)
                 let hashString = hashed.compactMap { String(format: "%02x", $0) }.joined()
-                
                 if !EXPECTED_BUNNY_SHA256.isEmpty && hashString != EXPECTED_BUNNY_SHA256 {
-                    print("⚠️ HASH MISMATCH! Deleting corrupted/spoofed file.")
                     try? fileManager.removeItem(at: meshURL)
                     shouldDownload = true
                 } else {
-                    print("✅ Integrity Verified.")
                     shouldDownload = false
                 }
             }
         }
         
         if shouldDownload {
-            print("⬇️ Downloading Stanford Bunny...")
+            print("⬇️ Downloading Bunny...")
             if let url = URL(string: "https://raw.githubusercontent.com/alecjacobson/common-3d-test-models/master/data/bunny.obj"),
                let data = try? Data(contentsOf: url) {
                 try? data.write(to: meshURL)
-                print("✅ Download Complete & Saved.")
-                
-                let hashed = SHA256.hash(data: data)
-                let hashString = hashed.compactMap { String(format: "%02x", $0) }.joined()
-                print("ℹ️ NEW FILE HASH: \(hashString)")
-            } else {
-                print("❌ Download Failed.")
+                print("✅ Download Complete.")
             }
         }
         
@@ -113,33 +96,29 @@ class Renderer: NSObject, MTKViewDelegate {
             let asset = MDLAsset(url: meshURL, vertexDescriptor: nil, bufferAllocator: allocator)
             mdlMesh = asset.childObjects(of: MDLMesh.self).first as! MDLMesh
             
-            // Normalize Scale
             let boundingBox = mdlMesh.boundingBox
             let extent = boundingBox.maxBounds - boundingBox.minBounds
-            let maxDimension = max(extent.x, max(extent.y, extent.z))
-            if maxDimension > 0 {
-                let scaleFactor = 3.0 / maxDimension 
-                let center = (boundingBox.maxBounds + boundingBox.minBounds) / 2.0
-                let transform = MDLTransform()
-                transform.translation = -center
-                transform.scale = SIMD3<Float>(scaleFactor, scaleFactor, scaleFactor)
-                mdlMesh.transform = transform 
+            let maxDim = max(extent.x, max(extent.y, extent.z))
+            
+            if maxDim > 0 {
+                self.meshScale = 2.0 / maxDim 
+                print("📏 Mesh Size: \(maxDim). Scale: \(self.meshScale)")
             }
             
-            // SILENCE THE NOISE
-            // We wrap the heavy ModelIO processing in our stderr redirector
-            print("⚙️ Processing Mesh (Normals/UVs)...")
+            let center = (boundingBox.maxBounds + boundingBox.minBounds) / 2.0
+            let centering = MDLTransform()
+            centering.translation = -center
+            mdlMesh.transform = centering 
+            
             silenceStderr {
                 mdlMesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.5)
                 mdlMesh.addUnwrappedTextureCoordinates(forAttributeNamed: MDLVertexAttributeTextureCoordinate)
             }
-            print("✨ Mesh Processing Complete.")
-            
         } else {
-            mdlMesh = MDLMesh(sphereWithExtent: [1.5, 1.5, 1.5], segments: [40, 40], inwardNormals: false, geometryType: .triangles, allocator: allocator)
+            mdlMesh = MDLMesh(sphereWithExtent: [1.0, 1.0, 1.0], segments: [40, 40], inwardNormals: false, geometryType: .triangles, allocator: allocator)
+            self.meshScale = 1.0
         }
         
-        // 4. Vertex Layout
         let vDesc = MTLVertexDescriptor()
         vDesc.attributes[0].format = .float3; vDesc.attributes[0].offset = 0; vDesc.attributes[0].bufferIndex = 1
         vDesc.attributes[1].format = .float3; vDesc.attributes[1].offset = 12; vDesc.attributes[1].bufferIndex = 1
@@ -155,9 +134,8 @@ class Renderer: NSObject, MTKViewDelegate {
         mdlMesh.vertexDescriptor = mdlLayout
         
         self.mesh = try? MTKMesh(mesh: mdlMesh, device: device)
-        print("🗿 Mesh Ready. Vertices: \(mdlMesh.vertexCount)")
         
-        // 5. Shaders
+        // 4. Shaders & Pipelines
         var library: MTLLibrary?
         if let libURL = Bundle.module.url(forResource: "default", withExtension: "metallib") { try? library = device.makeLibrary(URL: libURL) }
         if library == nil {
@@ -166,7 +144,6 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         guard let validLib = library else { return nil }
         
-        // Scene Pipeline
         let pipelineDescriptor = MTLRenderPipelineDescriptor()
         pipelineDescriptor.vertexFunction = validLib.makeFunction(name: "sumi_vertex_shader")
         pipelineDescriptor.fragmentFunction = validLib.makeFunction(name: "sumi_fragment_shader")
@@ -175,7 +152,6 @@ class Renderer: NSObject, MTKViewDelegate {
         pipelineDescriptor.vertexDescriptor = vDesc
         self.scenePipelineState = try! device.makeRenderPipelineState(descriptor: pipelineDescriptor)
         
-        // Screen Pipeline
         let screenShaderSource = """
         #include <metal_stdlib>
         using namespace metal;
@@ -200,7 +176,7 @@ class Renderer: NSObject, MTKViewDelegate {
         screenPipelineDesc.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
         self.screenPipelineState = try! device.makeRenderPipelineState(descriptor: screenPipelineDesc)
         
-        // 6. Texture
+        // 5. Texture
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 512, height: 512, mipmapped: true)
         texDesc.usage = [.shaderRead]
         self.texture = device.makeTexture(descriptor: texDesc)!
@@ -214,7 +190,7 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         self.texture.replace(region: MTLRegionMake2D(0,0,512,512), mipmapLevel: 0, withBytes: pixels, bytesPerRow: 512*4)
         
-        // 7. Argument Buffer
+        // 6. Buffers
         self.uniformBuffer = device.makeBuffer(length: MemoryLayout<Uniforms>.stride, options: [.storageModeShared])!
         let argEncoder = pipelineDescriptor.vertexFunction!.makeArgumentEncoder(bufferIndex: 0)
         self.argumentBuffer = device.makeBuffer(length: argEncoder.encodedLength, options: [])!
@@ -224,11 +200,27 @@ class Renderer: NSObject, MTKViewDelegate {
         
         super.init()
         
-        // 8. Recorder
+        // 7. Recorder
         self.recorder = Recorder(device: device, size: renderSize)
-        let videoURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("hayagaki_scan_bunny.mp4")
+        let videoURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("hayagaki_interactive.mp4")
         self.recorder?.start(outputURL: videoURL)
         metalKitView.colorPixelFormat = .bgra8Unorm
+        
+        // 8. ROBUST INPUT HANDLING (Global Monitor)
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .scrollWheel]) { [weak self] event in
+            guard let self = self else { return event }
+            
+            if event.type == .scrollWheel {
+                self.zoomLevel += Float(event.deltaY) * 0.01
+                self.zoomLevel = max(0.2, min(self.zoomLevel, 5.0))
+            } else if event.type == .leftMouseDragged {
+                self.isDragging = true
+                self.rotationY += Float(event.deltaX) * 0.01
+                self.rotationX += Float(event.deltaY) * 0.01
+            }
+            
+            return event
+        }
     }
     
     func draw(in view: MTKView) {
@@ -247,7 +239,7 @@ class Renderer: NSObject, MTKViewDelegate {
 
         guard recorder.isRecording, let (videoTexture, pixelBuffer) = recorder.getNextTexture() else { return }
         
-        // --- PASS 1: Render 3D Scene ---
+        // Pass 1: Render 3D Scene
         let passDescriptor = MTLRenderPassDescriptor()
         passDescriptor.colorAttachments[0].texture = videoTexture
         passDescriptor.colorAttachments[0].loadAction = .clear
@@ -264,16 +256,24 @@ class Renderer: NSObject, MTKViewDelegate {
         
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
         
-        rotationAngle += 0.01
         frameCounter += 1
         
-        // CINEMATIC ZOOM: Oscillate Z between 2.0 (close) and 4.0 (far)
-        let zoomZ = 3.0 + sin(rotationAngle * 0.5) * 1.0 
+        // CAMERA LOGIC
+        // Default fit distance set to 4.0 for a more "zoomed out" default
+        let fitDistance: Float = 4.0 
+        let currentDist = fitDistance / zoomLevel
         
-        let viewMat = sumi.lookAt(sumi.vec3(0, 1.5, zoomZ), sumi.vec3(0, 0.5, 0), sumi.vec3(0, 1, 0))
-        let model = sumi.rotate(sumi.mat4(1.0), rotationAngle, sumi.vec3(0, 1, 0))
+        // Auto-spin only if not dragging
+        let autoSpin = isDragging ? 0.0 : Float(frameCounter) * 0.005
+        
         let aspect = Float(renderSize.width / renderSize.height)
         let projection = sumi.perspective(sumi.radians(45.0), aspect, 0.1, 100.0)
+        let viewMat = sumi.lookAt(sumi.vec3(0, 0, currentDist), sumi.vec3(0, 0, 0), sumi.vec3(0, 1, 0))
+        
+        var model = sumi.mat4(1.0)
+        model = sumi.rotate(model, rotationX, sumi.vec3(1, 0, 0))
+        model = sumi.rotate(model, rotationY + autoSpin, sumi.vec3(0, 1, 0))
+        model = sumi.scale(model, sumi.vec3(meshScale, meshScale, meshScale))
         
         var uniforms = Uniforms(modelMatrix: model, viewMatrix: viewMat, projectionMatrix: projection)
         memcpy(uniformBuffer.contents(), &uniforms, MemoryLayout<Uniforms>.size)
@@ -292,7 +292,7 @@ class Renderer: NSObject, MTKViewDelegate {
         
         encoder.endEncoding()
         
-        // --- PASS 2: Render to Screen ---
+        // Pass 2: Render to Screen
         let screenPass = view.currentRenderPassDescriptor!
         guard let screenEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: screenPass) else { return }
         screenEncoder.setRenderPipelineState(screenPipelineState)
