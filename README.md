@@ -24,7 +24,7 @@ The engine is self-contained. It will automatically download test assets (Stanfo
 
 ```bash
 # Clone the repository
-git clone [https://github.com/yourusername/hayagaki.git](https://github.com/yourusername/hayagaki.git)
+git clone [https://github.com/crux161/hayagaki.git](https://github.com/crux161/hayagaki.git)
 cd hayagaki
 ./build.sh
 ```
