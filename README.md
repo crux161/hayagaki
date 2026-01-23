@@ -1,6 +1,5 @@
-<img align="left" width="80" height="80" src="./Resources/Hayagaki/Hayagaki.png">
-<h1>&emsp;Hayagaki (速描き)</h1><br>
-<br clear="left"/>
+<img align="left" width="75" height="75" src="./Resources/Hayagaki/Hayagaki.png">
+<h1>&emsp;Hayagaki (速描き)</h1>
 
 **Hayagaki** ("Fast Drawing") is a high-performance, offline-first rendering engine built for Apple Silicon. It bridges raw C++ physics with modern Swift/Metal graphics to create a cinematic model viewer that renders directly to video memory.
 
