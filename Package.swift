@@ -4,34 +4,32 @@ import PackageDescription
 let package = Package(
     name: "Hayagaki",
     platforms: [
-        .macOS(.v14) // Metal support usually wants modern macOS
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "Hayagaki", targets: ["Hayagaki"]),
         .library(name: "libsumi", targets: ["libsumi"])
     ],
     targets: [
-        // 1. The C++ Library Target
         .target(
             name: "libsumi",
             path: "Sources/libsumi",
             publicHeadersPath: "include",
-            cxxSettings: [
-                .unsafeFlags(["-std=c++17"]) // Enforce C++17 as per your CMakeLists
-            ]
+            cxxSettings: [.unsafeFlags(["-std=c++17"])]
         ),
-        
-        // 2. The Swift Executable
         .executableTarget(
             name: "Hayagaki",
             dependencies: ["libsumi"],
             path: "Sources/Hayagaki",
             resources: [
-                .process("Shaders.metal")
+                // Copy these as text files so we can read/stitch them at runtime
+                .copy("SumiCore.h"),
+                .copy("Shaders.metal"),
+                .copy("Demo_Bubbles.metal"),
+                .copy("Demo_Neon.metal"),
+                .copy("Demo_Fractal.metal")
             ],
-            swiftSettings: [
-                .interoperabilityMode(.Cxx)
-            ]
+            swiftSettings: [.interoperabilityMode(.Cxx)]
         )
     ]
 )

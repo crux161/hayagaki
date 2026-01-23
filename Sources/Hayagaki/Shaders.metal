@@ -1,67 +1,71 @@
 #include <metal_stdlib>
+#include "SumiCore.h" // Import shared definitions
 using namespace metal;
 
-// 1. Vertex Input (Mapped via Descriptor)
+// ============================================================================
+// INFRASTRUCTURE (Bunny & Screen)
+// ============================================================================
+
 struct VertexIn {
     float3 position [[attribute(0)]];
     float3 normal   [[attribute(1)]];
     float2 uv       [[attribute(2)]];
 };
 
-struct Uniforms {
-    float4x4 modelMatrix;
-    float4x4 viewMatrix;
-    float4x4 projectionMatrix;
+struct SceneUniforms {
+    mat4 model; mat4 view; mat4 proj;
 };
 
-struct SceneDescriptor {
-    constant Uniforms* uniforms [[id(0)]];
-    texture2d<float>   baseMap  [[id(1)]];
-};
-
-struct RasterizerData {
+struct VertexPayload {
     float4 position [[position]];
+    float3 worldPos;
     float3 normal;
     float2 uv;
 };
 
-// 2. Vertex Shader (Using stage_in)
-vertex RasterizerData sumi_vertex_shader(VertexIn in [[stage_in]],
-                                         constant SceneDescriptor &scene [[buffer(0)]]) 
-{
-    RasterizerData out;
-    
-    // Position Transform
-    float4 pos = float4(in.position, 1.0);
-    float4x4 mvp = scene.uniforms->projectionMatrix * scene.uniforms->viewMatrix * scene.uniforms->modelMatrix;
-    out.position = mvp * pos;
-    
-    // Normal Transform (Simple rotation)
-    // We cast the 4x4 to 3x3 to extract just rotation/scale
-    float3x3 rotMat = float3x3(scene.uniforms->modelMatrix[0].xyz, 
-                               scene.uniforms->modelMatrix[1].xyz, 
-                               scene.uniforms->modelMatrix[2].xyz);
-    out.normal = rotMat * in.normal;
-    
+struct ArgBuffer {
+    constant SceneUniforms* uniforms [[id(0)]];
+    texture2d<float> tex [[id(1)]];
+};
+
+// --- SCREEN PASS ---
+vertex VertOut screen_vert(uint vid [[vertex_id]]) {
+    const float2 verts[] = { {-1, -1}, {1, -1}, {-1, 1}, {1, 1} };
+    VertOut out;
+    out.pos = float4(verts[vid], 0, 1);
+    out.uv = verts[vid] * 0.5 + 0.5;
+    out.uv.y = 1.0 - out.uv.y;
+    return out;
+}
+
+fragment float4 screen_frag_blit(VertOut in [[stage_in]], texture2d<float> tex [[texture(0)]]) {
+    constexpr sampler s(filter::linear);
+    return tex.sample(s, in.uv);
+}
+
+// --- BUNNY 3D SCENE ---
+vertex VertexPayload sumi_vertex_shader(VertexIn in [[stage_in]], constant ArgBuffer& args [[buffer(0)]]) {
+    VertexPayload out;
+    mat4 mvp = args.uniforms->proj * args.uniforms->view * args.uniforms->model;
+    out.position = mvp * float4(in.position, 1.0);
+    out.worldPos = (args.uniforms->model * float4(in.position, 1.0)).xyz;
+    out.normal = (args.uniforms->model * float4(in.normal, 0.0)).xyz;
     out.uv = in.uv;
     return out;
 }
 
-// 3. Fragment Shader
-fragment float4 sumi_fragment_shader(RasterizerData in [[stage_in]],
-                                     constant SceneDescriptor &scene [[buffer(0)]]) 
-{
-    constexpr sampler s(filter::linear, mip_filter::linear);
-    
-    // Check if texture exists/is valid (optional safety, Metal handles nil gracefully usually)
-    float4 texColor = scene.baseMap.sample(s, in.uv);
-    
-    // Basic Lighting (Lambertian)
-    float3 lightDir = normalize(float3(1.0, 1.0, 1.0)); // Light from top-right-front
-    float nDotL = max(dot(normalize(in.normal), lightDir), 0.1); // 0.1 ambient
-    
-    // Debug: If texture is black, output pink to prove shader works
-    // if (texColor.a == 0) return float4(1, 0, 1, 1);
-    
-    return float4(texColor.rgb * nDotL, 1.0);
+fragment float4 sumi_fragment_shader(VertexPayload in [[stage_in]], constant ArgBuffer& args [[buffer(0)]]) {
+    constexpr sampler s(filter::linear);
+    float3 N = normalize(in.normal);
+    float3 L = normalize(float3(1, 1, 1));
+    float diff = max(dot(N, L), 0.0);
+    float4 color = args.tex.sample(s, in.uv);
+    return float4(color.rgb * (diff + 0.2), 1.0);
+}
+
+// --- FALLBACK ERROR ---
+fragment float4 demo_error(VertOut in [[stage_in]]) {
+    float2 uv = in.uv * 10.0;
+    float stripe = step(0.5, fract(uv.x + uv.y));
+    return float4(1.0, 0.0, 1.0, 1.0) * stripe;
 }

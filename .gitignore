@@ -13,6 +13,7 @@ env.sh
 # Xcode / MacOS
 *.xcodeproj/
 .DS_Store
+*.bundle
 
 # C++ Compilation Artifacts
 *.o
