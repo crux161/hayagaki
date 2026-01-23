@@ -1,17 +1,15 @@
 import Metal
 import MetalKit
 import ModelIO
-import libsumi // Ensure this is imported
+import libsumi
 import CryptoKit
 
-// --- FIX: C++ INTEROP ALIASING ---
-// Create local aliases to resolve "sumi" ambiguity
+// Fix C++ Interop Aliasing
 typealias vec2 = libsumi.sumi.vec2
 typealias vec3 = libsumi.sumi.vec3
 typealias vec4 = libsumi.sumi.vec4
 typealias mat4 = libsumi.sumi.mat4
 
-// Helper to silence ModelIO
 func silenceStderr(_ block: () -> Void) {
     let originalStderr = dup(STDERR_FILENO)
     let null = open("/dev/null", O_WRONLY)
@@ -28,21 +26,23 @@ struct Uniforms {
     var projectionMatrix: mat4
 }
 
-// ALIGNED STRUCT (Matches Metal Layout)
 struct DemoUniforms {
-    var iResolution: vec4 // Was vec3, now vec4 for alignment
-    var iTimeVec: vec4    // Was float, now vec4 (time is .x)
+    var iResolution: vec4
+    var iTimeVec: vec4
     var iMouse: vec4
 }
 
 class Renderer: NSObject, MTKViewDelegate {
-    // ... (Keep standard properties: device, commandQueue, etc.) ...
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
+    
     var scenePipelineState: MTLRenderPipelineState?
     var screenPipelineState: MTLRenderPipelineState?
     var demoPipelineState: MTLRenderPipelineState?
-    let depthStencilState: MTLDepthStencilState
+    
+    let depthStencilState: MTLDepthStencilState // For 3D Bunny (Less, Write)
+    let noDepthState: MTLDepthStencilState      // For 2D Screens (Always, No Write) <--- NEW
+    
     var mesh: MTKMesh?
     let texture: MTLTexture
     let uniformBuffer: MTLBuffer
@@ -52,10 +52,9 @@ class Renderer: NSObject, MTKViewDelegate {
     let renderSize: CGSize
     let config: HayagakiConfig
     
-    // Interaction
     var rotationX: Float = 0.0
     var rotationY: Float = 0.0
-    var zoomLevel: Float = 1.0 
+    var zoomLevel: Float = 1.0
     var meshScale: Float = 1.0
     var isDragging = false
     var frameCounter: Int = 0
@@ -75,23 +74,27 @@ class Renderer: NSObject, MTKViewDelegate {
         
         metalKitView.depthStencilPixelFormat = .depth32Float
         metalKitView.clearDepth = 1.0
+        
+        // 1. Standard Depth State (For 3D)
         let depthDesc = MTLDepthStencilDescriptor()
         depthDesc.depthCompareFunction = .less
         depthDesc.isDepthWriteEnabled = true
         self.depthStencilState = device.makeDepthStencilState(descriptor: depthDesc)!
         
-        // --- SHADER LOADING (With Source Stitching) ---
-        var library: MTLLibrary?
+        // 2. No Depth State (For 2D Quads) <--- NEW
+        let noDepthDesc = MTLDepthStencilDescriptor()
+        noDepthDesc.depthCompareFunction = .always
+        noDepthDesc.isDepthWriteEnabled = false
+        self.noDepthState = device.makeDepthStencilState(descriptor: noDepthDesc)!
         
-        // 1. Try to load pre-compiled default.metallib (likely won't exist now, which is good)
-        if let libURL = Bundle.module.url(forResource: "default", withExtension: "metallib") { 
-            try? library = device.makeLibrary(URL: libURL) 
+        // --- SHADER LOADING ---
+        var library: MTLLibrary?
+        if let libURL = Bundle.module.url(forResource: "default", withExtension: "metallib") {
+            try? library = device.makeLibrary(URL: libURL)
         }
         
-        // 2. Fallback: Runtime Stitching (The Robust Way)
         if library == nil {
             do {
-                // Helper to read from Bundle
                 func loadShader(_ name: String, _ ext: String) throws -> String {
                     guard let path = Bundle.module.path(forResource: name, ofType: ext) else {
                         throw NSError(domain: "Hayagaki", code: 404, userInfo: [NSLocalizedDescriptionKey: "Missing \(name).\(ext)"])
@@ -99,16 +102,12 @@ class Renderer: NSObject, MTKViewDelegate {
                     return try String(contentsOfFile: path, encoding: .utf8)
                 }
 
-                // Read Core Files
                 let sumiCore = try loadShader("SumiCore", "h")
                 var coreShaders = try loadShader("Shaders", "metal")
                 
-                // Read Demo File
                 var demoSource = ""
                 if config.demoName != "bunny" {
-                    // "bubbles" -> "Demo_Bubbles"
                     let name = "Demo_" + config.demoName.prefix(1).capitalized + config.demoName.dropFirst()
-                    
                     if let path = Bundle.module.path(forResource: name, ofType: "metal") {
                         demoSource = try String(contentsOfFile: path, encoding: .utf8)
                     } else {
@@ -116,23 +115,20 @@ class Renderer: NSObject, MTKViewDelegate {
                     }
                 }
                 
-                // Stitch & Clean
                 coreShaders = coreShaders.replacingOccurrences(of: "#include \"SumiCore.h\"", with: "")
                 demoSource = demoSource.replacingOccurrences(of: "#include \"SumiCore.h\"", with: "")
                 
                 let fullSource = sumiCore + "\n" + coreShaders + "\n" + demoSource
                 library = try device.makeLibrary(source: fullSource, options: nil)
-                
             } catch {
                 print("\n💥 SHADER COMPILATION ERROR:\n\(error)\n")
             }
         }
         guard let validLib = library else { return nil }
         
-        // --- ASSETS (Bunny) ---
+        // --- ASSETS ---
         let allocator = MTKMeshBufferAllocator(device: device)
         let mdlMesh = MDLMesh(sphereWithExtent: [1,1,1], segments: [10,10], inwardNormals: false, geometryType: .triangles, allocator: allocator)
-        
         let vDesc = MTLVertexDescriptor()
         vDesc.attributes[0].format = .float3; vDesc.attributes[0].offset = 0; vDesc.attributes[0].bufferIndex = 1
         vDesc.attributes[1].format = .float3; vDesc.attributes[1].offset = 12; vDesc.attributes[1].bufferIndex = 1
@@ -164,7 +160,7 @@ class Renderer: NSObject, MTKViewDelegate {
             argEncoder.setArgumentBuffer(argumentBuffer, offset: 0)
             argEncoder.setBuffer(uniformBuffer, offset: 0, index: 0)
             argEncoder.setTexture(texture, index: 1)
-            self.demoUniformBuffer = device.makeBuffer(length: 16, options: [])! 
+            self.demoUniformBuffer = device.makeBuffer(length: 16, options: [])!
         } else {
             let demoFunc = validLib.makeFunction(name: "demo_\(config.demoName)") ?? validLib.makeFunction(name: "demo_error")!
             let screenVert = validLib.makeFunction(name: "screen_vert")
@@ -177,8 +173,8 @@ class Renderer: NSObject, MTKViewDelegate {
             self.demoPipelineState = try! device.makeRenderPipelineState(descriptor: pipeDesc)
             
             self.demoUniformBuffer = device.makeBuffer(length: MemoryLayout<DemoUniforms>.stride, options: [.storageModeShared])!
-            self.uniformBuffer = device.makeBuffer(length: 16, options: [])! 
-            self.argumentBuffer = device.makeBuffer(length: 16, options: [])! 
+            self.uniformBuffer = device.makeBuffer(length: 16, options: [])!
+            self.argumentBuffer = device.makeBuffer(length: 16, options: [])!
         }
         
         // Screen Blit
@@ -199,6 +195,8 @@ class Renderer: NSObject, MTKViewDelegate {
         spDesc.vertexFunction = screenLib.makeFunction(name: "screen_vert_blit")
         spDesc.fragmentFunction = screenLib.makeFunction(name: "screen_frag_blit")
         spDesc.colorAttachments[0].pixelFormat = metalKitView.colorPixelFormat
+        // Important: Match the view's depth format, or it won't render
+        spDesc.depthAttachmentPixelFormat = metalKitView.depthStencilPixelFormat
         self.screenPipelineState = try! device.makeRenderPipelineState(descriptor: spDesc)
 
         super.init()
@@ -209,7 +207,6 @@ class Renderer: NSObject, MTKViewDelegate {
             self.recorder?.start(outputURL: url)
         }
         
-        // Input Handling
         if config.allowMouse {
             NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .scrollWheel, .leftMouseDown]) { [weak self] event in
                 guard let self = self else { return event }
@@ -240,7 +237,6 @@ class Renderer: NSObject, MTKViewDelegate {
             return
         }
         
-        // Texture setup (Recorder or Temp)
         var targetTex: MTLTexture?
         var pixBuf: CVPixelBuffer?
         if let rec = self.recorder, rec.isRecording {
@@ -251,18 +247,34 @@ class Renderer: NSObject, MTKViewDelegate {
         }
         guard let vidTex = targetTex else { return }
         
-        let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].texture = vidTex
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        passDesc.colorAttachments[0].storeAction = .store
+        // --- PASS 1: OFFSCREEN RENDER ---
+        let passDescriptor = MTLRenderPassDescriptor()
+        passDescriptor.colorAttachments[0].texture = vidTex
+        passDescriptor.colorAttachments[0].loadAction = .clear
+        passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1)
+        passDescriptor.colorAttachments[0].storeAction = .store
         
-        guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc) else { return }
+        // Always creating depth texture to satisfy pipeline validation, but we might ignore it
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: Int(renderSize.width), height: Int(renderSize.height), mipmapped: false)
+        depthDesc.usage = [.renderTarget]
+        depthDesc.storageMode = .private
+        let depthTex = device.makeTexture(descriptor: depthDesc)
+        passDescriptor.depthAttachment.texture = depthTex
+        passDescriptor.depthAttachment.loadAction = .clear
+        passDescriptor.depthAttachment.storeAction = .dontCare
+        
+        guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
         frameCounter += 1
         let time = Float(frameCounter) / 60.0
         
+        // Explicitly set Viewport (Safeguard)
+        enc.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(renderSize.width), height: Double(renderSize.height), znear: 0, zfar: 1))
+        
         if config.demoName == "bunny", let mesh = self.mesh, let pipe = self.scenePipelineState {
-            let fitDistance: Float = 4.0 
+            // Bunny Mode: Use Standard Depth (Less)
+            enc.setDepthStencilState(depthStencilState) // <--- Standard Depth
+            
+            let fitDistance: Float = 4.0
             let currentDist = fitDistance / zoomLevel
             let autoSpin = isDragging ? 0.0 : Float(frameCounter) * 0.005
             
@@ -287,25 +299,31 @@ class Renderer: NSObject, MTKViewDelegate {
             for s in mesh.submeshes { enc.drawIndexedPrimitives(type: s.primitiveType, indexCount: s.indexCount, indexType: s.indexType, indexBuffer: s.indexBuffer.buffer, indexBufferOffset: s.indexBuffer.offset) }
             
         } else if let pipe = self.demoPipelineState {
-            // --- UPDATE: Populate Aligned Struct ---
+            // Demo Mode: Use No Depth (Always Pass)
+            enc.setDepthStencilState(noDepthState) // <--- FIX HERE
+            
             var uniforms = DemoUniforms(
                 iResolution: vec4(Float(renderSize.width), Float(renderSize.height), 0, 0),
-                iTimeVec: vec4(time, 0, 0, 0), // Time is .x
+                iTimeVec: vec4(time, 0, 0, 0),
                 iMouse: vec4(mousePos.x, mousePos.y, mouseClick.x, mouseClick.y)
             )
             memcpy(demoUniformBuffer.contents(), &uniforms, MemoryLayout<DemoUniforms>.size)
             
             enc.setRenderPipelineState(pipe)
             enc.setFragmentBuffer(demoUniformBuffer, offset: 0, index: 0)
-            enc.setFragmentTexture(texture, index: 1) 
+            enc.setFragmentTexture(texture, index: 1)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         
         enc.endEncoding()
         
-        // Screen Blit
+        // --- PASS 2: BLIT TO SCREEN ---
         let screenPass = view.currentRenderPassDescriptor!
-        let sEnc = commandBuffer.makeRenderCommandEncoder(descriptor: screenPass)!
+        guard let sEnc = commandBuffer.makeRenderCommandEncoder(descriptor: screenPass) else { return }
+        
+        // Blit Mode: Also uses No Depth (Always Pass)
+        sEnc.setDepthStencilState(noDepthState) // <--- FIX HERE
+        
         sEnc.setRenderPipelineState(screenPipelineState!)
         sEnc.setFragmentTexture(vidTex, index: 0)
         sEnc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

@@ -2,6 +2,7 @@
 #include "SumiCore.h"
 using namespace metal;
 
+// Helper function from original neon.cpp
 vec4 palette(float t) {
     vec4 a = vec4(0.5, 0.5, 0.5, 0.0);
     vec4 b = vec4(0.5, 0.5, 0.5, 0.0);
@@ -12,10 +13,13 @@ vec4 palette(float t) {
 }
 
 fragment float4 demo_neon(VertOut in [[stage_in]], constant DemoUniforms& u [[buffer(0)]]) {
+    // 1. Setup Inputs
     vec2 fragCoord = in.pos.xy;
     vec2 iResolution = u.iResolution.xy;
-    float iTime = u.iTimeVec.x; // <--- FIX HERE
+    float iTime = u.iTimeVec.x; // <--- Using the aligned time vector
 
+    // 2. Logic ported from Eshi's neon.cpp
+    // Map coordinates to -1..1 (aspect corrected)
     vec2 uv = (fragCoord * 2.0 - iResolution) / iResolution.y;
     vec2 uv0 = uv;
     
@@ -29,7 +33,7 @@ fragment float4 demo_neon(VertOut in [[stage_in]], constant DemoUniforms& u [[bu
         vec4 col = palette(length(uv0) + i * 0.4 + iTime * 0.4);
 
         d = sin(d * 8.0 + iTime) / 8.0;
-        d = abs(d); 
+        d = abs(d);
         
         d = pow(0.01 / d, 1.2);
 
