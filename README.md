@@ -1,4 +1,4 @@
-<img align="left" width="100" height="100" src="./Resources/Hayagaki/Hayagaki.png">
+<img align="left" width="80" height="80" src="./Resources/Hayagaki/Hayagaki.png">
 <h1>&emsp;Hayagaki (速描き)</h1><br>
 <br clear="left"/>
 
