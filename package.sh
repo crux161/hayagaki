@@ -2,38 +2,63 @@
 
 APP_NAME="Hayagaki"
 SOURCE_ICON="Resources/Hayagaki/Hayagaki.icns"
+# Assuming libsumi lives here based on your previous commands
+LIBSUMI_PATH="$(pwd)/Sources/libsumi/lib"
 
-echo "🚀 Building $APP_NAME via Swift..."
-swift build -c release
+echo "🚀 Starting Universal Build for $APP_NAME..."
 
-if [ $? -ne 0 ]; then
-    echo "💥 Build failed."
-    exit 1
-fi
+# --- Step 1: Build for Intel (x86_64) ---
+echo "⚙️  Building for Intel (x86_64)..."
+swift build --arch x86_64 -c release -Xlinker -L"$LIBSUMI_PATH"
+if [ $? -ne 0 ]; then echo "💥 Intel build failed."; exit 1; fi
 
+# --- Step 2: Build for Apple Silicon (arm64) ---
+echo "⚙️  Building for Apple Silicon (arm64)..."
+swift build --arch arm64 -c release -Xlinker -L"$LIBSUMI_PATH"
+if [ $? -ne 0 ]; then echo "💥 Apple Silicon build failed."; exit 1; fi
+
+# --- Step 3: Create Universal Binary (Lipo) ---
+echo "🔗 Creating Universal Binary..."
+# Define where SPM put the binaries
+BIN_X86=".build/x86_64-apple-macosx/release/$APP_NAME"
+BIN_ARM=".build/arm64-apple-macosx/release/$APP_NAME"
+
+# Create a temporary universal binary
+lipo -create -output "$APP_NAME-Universal" "$BIN_X86" "$BIN_ARM"
+
+if [ $? -ne 0 ]; then echo "💥 Lipo failed."; exit 1; fi
+
+# --- Step 4: Packaging ---
 echo "📦 Packaging into $APP_NAME.app..."
 
-# 1. Create the App Bundle Structure
+# Create Bundle Structure
+rm -rf "$APP_NAME.app" # clear old one
 mkdir -p "$APP_NAME.app/Contents/MacOS"
 mkdir -p "$APP_NAME.app/Contents/Resources"
 
-# 2. Copy the Binary
-cp .build/release/$APP_NAME "$APP_NAME.app/Contents/MacOS/"
+# Move the Universal Binary into place
+mv "$APP_NAME-Universal" "$APP_NAME.app/Contents/MacOS/$APP_NAME"
+chmod +x "$APP_NAME.app/Contents/MacOS/$APP_NAME"
 
-# 3. Copy the SPM Resource Bundle (Shaders/Headers)
-# Note: We place this inside MacOS so the binary finds it relative to itself via Bundle.module
-if [ -d ".build/release/${APP_NAME}_${APP_NAME}.bundle" ]; then
-    cp -r ".build/release/${APP_NAME}_${APP_NAME}.bundle" "$APP_NAME.app/Contents/MacOS/"
+# --- Step 5: Handle Resources ---
+# We can grab the resource bundle from either architecture (they are identical)
+BUNDLE_PATH=".build/arm64-apple-macosx/release/${APP_NAME}_${APP_NAME}.bundle"
+
+if [ -d "$BUNDLE_PATH" ]; then
+    echo "📂 Copying resources..."
+    cp -r "$BUNDLE_PATH" "$APP_NAME.app/Contents/MacOS/"
+else
+    echo "⚠  Note: No resource bundle found (Check if Package.swift defines resources)."
 fi
 
-# 4. Copy the Icon
+# Copy Icon
 if [ -f "$SOURCE_ICON" ]; then
     cp "$SOURCE_ICON" "$APP_NAME.app/Contents/Resources/$APP_NAME.icns"
 else
-    echo "⚠️ Warning: Icon not found at $SOURCE_ICON"
+    echo "⚠  Warning: Icon not found at $SOURCE_ICON"
 fi
 
-# 5. Generate Info.plist (Essential for the icon to show up)
+# --- Step 6: Generate Info.plist ---
 cat > "$APP_NAME.app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,17 +78,16 @@ cat > "$APP_NAME.app/Contents/Info.plist" <<EOF
     <string>6.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
 </plist>
 EOF
 
-# 6. Ad-Hoc Signing (NEW STEP)
+# --- Step 7: Signing ---
 echo "🔏 Applying Ad-Hoc Signature..."
-# --force: Overwrite any existing signature
-# --deep: Sign frameworks/libraries inside the bundle
-# --sign -: Sign with "Ad-Hoc" (no identity required)
 codesign --force --deep --options runtime --sign - "$APP_NAME.app"
 
-echo "✅ Done! Run open $APP_NAME.app to test."
+echo "✅ Done! '$APP_NAME.app' is now a Universal Binary."

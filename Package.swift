@@ -3,26 +3,14 @@ import PackageDescription
 
 let package = Package(
     name: "Hayagaki",
-    platforms: [
-        .macOS(.v14)
-    ],
-    products: [
-        .executable(name: "Hayagaki", targets: ["Hayagaki"]),
-        .library(name: "libsumi", targets: ["libsumi"])
-    ],
+    platforms: [.macOS(.v11)],
     targets: [
-        .target(
-            name: "libsumi",
-            path: "Sources/libsumi",
-            publicHeadersPath: "include",
-            cxxSettings: [.unsafeFlags(["-std=c++17"])]
-        ),
+        // 1. Define the executable
         .executableTarget(
             name: "Hayagaki",
-            dependencies: ["libsumi"],
+            dependencies: ["LibSumi"], // Depend on the C++ lib
             path: "Sources/Hayagaki",
             resources: [
-                // Copy these as text files so we can read/stitch them at runtime
                 .copy("SumiCore.h"),
                 .copy("Shaders.metal"),
                 .copy("Demo_Bubbles.metal"),
@@ -30,6 +18,14 @@ let package = Package(
                 .copy("Demo_Fractal.metal")
             ],
             swiftSettings: [.interoperabilityMode(.Cxx)]
+        ),
+        
+        // 2. Define the C++ Library Wrapper
+        .systemLibrary(
+            name: "LibSumi",
+            path: "Sources/libsumi",
+            pkgConfig: "sumi", // Optional: if you use pkg-config
+            providers: []
         )
     ]
 )
